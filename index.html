@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Campus Lost &amp; Found dApp</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.umd.min.js"></script>
+</head>
+<body>
+
+<header>
+  <!-- Image element (inline SVG so no external file is needed) -->
+  <img alt="Magnifying glass logo" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><circle cx='26' cy='26' r='16' fill='none' stroke='white' stroke-width='6'/><line x1='38' y1='38' x2='58' y2='58' stroke='white' stroke-width='7' stroke-linecap='round'/></svg>">
+  <h1>Campus Lost &amp; Found</h1>
+  <p>A decentralized app on the Sepolia testnet &mdash; MG3012 Assignment 2</p>
+</header>
+
+<main>
+
+  <section>
+    <h2>1. Connect Wallet</h2>
+    <p>Connect MetaMask (Sepolia network) to report, claim, or return items.</p>
+    <button id="connectBtn">Connect MetaMask</button>
+    <p>Status: <span id="status">Connected</span></p>
+    <p class="muted">Account: <span id="0x99d015a41e80aebe77183a02b8045813dd1a254b">-0x99d015a41e80aebe77183a02b8045813dd1a254b</span></p>
+    <p class="muted">Contract: <span id="0x88aC87497C0C10FFC3c43bd64Ab4DF6C8b4ceF85">-0x88aC87497C0C10FFC3c43bd64Ab4DF6C8b4ceF85</span></p>
+  </section>
+
+  <section>
+    <h2>2. Report an Item</h2>
+    <label>Type
+      <select id="itemType">
+        <option value="lost">I lost something</option>
+        <option value="found">I found something</option>
+      </select>
+    </label>
+    <label>Title
+      <input id="title" type="text" placeholder="e.g. Black backpack">
+    </label>
+    <label>Description
+      <textarea id="description" rows="2" placeholder="Colour, brand, any marks..."></textarea>
+    </label>
+    <label>Location
+      <input id="location" type="text" placeholder="e.g. Library, 2nd floor">
+    </label>
+    <button id="reportBtn" disabled>Submit to Blockchain</button>
+    <div id="txResult"></div>
+  </section>
+
+  <section>
+    <h2>3. Reported Items</h2>
+    <p>Total items on-chain: <strong id="count">0</strong></p>
+    <button id="refreshBtn" class="secondary" disabled>Refresh List</button>
+    <div id="itemList" style="margin-top:14px;"></div>
+  </section>
+
+  <section>
+    <h2>How it works</h2>
+    <ul>
+      <li>Report a lost or found item &mdash; stored permanently on Sepolia.</li>
+      <li>Anyone else can <b>claim</b> an open item.</li>
+      <li>The original reporter confirms it was <b>returned</b>.</li>
+    </ul>
+    <p>
+      Need test ETH? Visit a
+      <a href="https://sepoliafaucet.com" target="_blank" rel="noopener">Sepolia faucet</a>.
+      Browse transactions on
+      <a href="https://sepolia.etherscan.io" target="_blank" rel="noopener">Sepolia Etherscan</a>.
+    </p>
+  </section>
+
+</main>
+
+<footer>MG3012 &ndash; Blockchain Technology for Business &middot; BSFT Fall 2026</footer>
+
+<script>
+  // ====== CONFIG: paste your deployed contract address here ======
+  const CONTRACT_ADDRESS = "0x88aC87497C0C10FFC3c43bd64Ab4DF6C8b4ceF85";
+  const SEPOLIA_CHAIN_ID = "0xaa36a7"; // 11155111
+
+  const ABI = [
+    "function reportItem(string _title, string _description, string _location, bool _isLost) returns (uint256)",
+    "function claimItem(uint256 _id)",
+    "function markReturned(uint256 _id)",
+    "function getItemCount() view returns (uint256)",
+    "function getItem(uint256 _id) view returns (tuple(uint256 id, address reporter, string title, string description, string location, bool isLost, uint8 status, address claimer, uint256 timestamp))"
+  ];
+  const STATUS = ["Open", "Claimed", "Returned"];
+
+  let provider, signer, contract, userAddress;
+
+  const $ = (id) => document.getElementById(id);
+
+  function showTx(html) {
+    const box = $("txResult");
+    box.style.display = "block";
+    box.innerHTML = html;
+  }
+
+  function esc(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  // ---------- Connect MetaMask ----------
+  async function connect() {
+    if (!window.ethereum) {
+      alert("MetaMask not found. Please install it first.");
+      return;
+    }
+    try {
+      await window.ethereum.request({ method: "eth_requestAccounts" });
+
+      // make sure we are on Sepolia
+      const chainId = await window.ethereum.request({ method: "eth_chainId" });
+      if (chainId !== SEPOLIA_CHAIN_ID) {
+        await window.ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: SEPOLIA_CHAIN_ID }]
+        });
+      }
+
+      provider = new ethers.BrowserProvider(window.ethereum);
+      signer = await provider.getSigner();
+      userAddress = await signer.getAddress();
+      contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+
+      $("status").textContent = "Connected (Sepolia)";
+      $("status").style.color = "#2f9e44";
+      $("account").textContent = userAddress;
+      $("contractAddr").textContent = CONTRACT_ADDRESS;
+      $("reportBtn").disabled = false;
+      $("refreshBtn").disabled = false;
+
+      await loadItems();
+    } catch (err) {
+      console.error(err);
+      $("status").textContent = "Connection failed: " + (err.shortMessage || err.message);
+      $("status").style.color = "#e03131";
+    }
+  }
+
+  // ---------- Write: report item ----------
+  async function reportItem() {
+    const title = $("title").value.trim();
+    const desc = $("description").value.trim();
+    const loc = $("location").value.trim();
+    const isLost = $("itemType").value === "lost";
+
+    if (!title) { alert("Please enter a title."); return; }
+
+    await sendTx(() => contract.reportItem(title, desc, loc, isLost), "Reporting item");
+    $("title").value = ""; $("description").value = ""; $("location").value = "";
+  }
+
+  // ---------- Write: claim / return ----------
+  async function claimItem(id)    { await sendTx(() => contract.claimItem(id), "Claiming item #" + id); }
+  async function markReturned(id) { await sendTx(() => contract.markReturned(id), "Confirming return of item #" + id); }
+
+  // Shared helper: send tx, show hash, wait for confirmation, refresh list
+  async function sendTx(fn, label) {
+    try {
+      showTx(label + "... please confirm in MetaMask.");
+      const tx = await fn();
+      showTx(label + "... pending.<br>Tx hash: <a target='_blank' rel='noopener' href='https://sepolia.etherscan.io/tx/" +
+             tx.hash + "'>" + tx.hash + "</a>");
+      const receipt = await tx.wait();
+      showTx("✅ Confirmed in block " + receipt.blockNumber +
+             "<br>Tx hash: <a target='_blank' rel='noopener' href='https://sepolia.etherscan.io/tx/" +
+             tx.hash + "'>" + tx.hash + "</a>");
+      await loadItems();
+    } catch (err) {
+      console.error(err);
+      showTx("❌ Failed: " + esc(err.reason || err.shortMessage || err.message));
+    }
+  }
+
+  // ---------- Read: load all items ----------
+  async function loadItems() {
+    try {
+      const count = Number(await contract.getItemCount());
+      $("count").textContent = count;
+      const list = $("itemList");
+      list.innerHTML = "";
+
+      if (count === 0) {
+        list.innerHTML = "<p class='muted'>No items yet. Be the first to report one!</p>";
+        return;
+      }
+
+      for (let i = count; i >= 1; i--) {
+        const it = await contract.getItem(i);
+        const status = Number(it.status);
+        const isReporter = it.reporter.toLowerCase() === userAddress.toLowerCase();
+        const date = new Date(Number(it.timestamp) * 1000).toLocaleString();
+
+        let actions = "";
+        if (status === 0 && !isReporter) {
+          actions += "<button onclick='claimItem(" + i + ")'>Claim</button>";
+        }
+        if (status === 1 && isReporter) {
+          actions += "<button onclick='markReturned(" + i + ")'>Mark as Returned</button>";
+        }
+
+        list.innerHTML +=
+          "<div class='item'>" +
+            "<h3>#" + i + " " + esc(it.title) + "</h3>" +
+            "<span class='badge " + (it.isLost ? "lost" : "found") + "'>" + (it.isLost ? "LOST" : "FOUND") + "</span>" +
+            "<span class='badge status'>" + STATUS[status] + "</span>" +
+            "<p>" + esc(it.description) + "</p>" +
+            "<p class='muted'>📍 " + esc(it.location) + " &middot; " + date + "</p>" +
+            "<p class='muted'>Reporter: " + it.reporter.slice(0, 8) + "..." + it.reporter.slice(-4) + "</p>" +
+            "<div class='actions'>" + actions + "</div>" +
+          "</div>";
+      }
+    } catch (err) {
+      console.error(err);
+      $("itemList").innerHTML = "<p>Could not load items: " + esc(err.shortMessage || err.message) + "</p>";
+    }
+  }
+
+  $("connectBtn").addEventListener("click", connect);
+  $("reportBtn").addEventListener("click", reportItem);
+  $("refreshBtn").addEventListener("click", loadItems);
+
+  // reload if user switches account or network
+  if (window.ethereum) {
+    window.ethereum.on("accountsChanged", () => location.reload());
+    window.ethereum.on("chainChanged", () => location.reload());
+  }
+</script>
+</body>
+</html>
